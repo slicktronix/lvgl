@@ -46,7 +46,7 @@ void test_snapshot_with_transform_should_not_leak_memory(void)
     lv_obj_t * label = lv_label_create(lv_screen_active());
     lv_obj_center(label);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
-    lv_label_set_text(label, "Hello!");
+    lv_label_set_text(label, "Wubba lubba dub dub!");
     lv_obj_set_style_transform_rotation(label, 450, 0);
 
     lv_mem_monitor(&monitor);
