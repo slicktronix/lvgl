@@ -123,12 +123,17 @@ static bool screenshot_compare(const char * fn_ref, uint8_t tolerance)
 
     if(ref_img_width != draw_buf->header.w || ref_img_height != draw_buf->header.h) {
         LV_LOG_WARN("The dimensions of the rendered and the %s reference image don't match", fn_ref);
+        /* Clean up before returning */
+        lv_draw_buf_destroy(ref_draw_buf);
+        lv_free(screen_buf_xrgb8888);
         return false;
     }
 
-
     unsigned x, y;
     bool err = false;
+    int err_x = -1;
+    int err_y = -1;
+
     for(y = 0; y < ref_img_height; y++) {
         uint8_t * screen_buf_tmp = screen_buf_xrgb8888 + draw_buf->header.w * 4 * y;
         uint8_t * ref_row = (uint8_t *)ref_draw_buf->data + y * ref_draw_buf->header.stride;
@@ -150,6 +155,8 @@ static bool screenshot_compare(const char * fn_ref, uint8_t tolerance)
                        "  - Tolerance: %d\n",
                        fn_ref_full,  x, y, ref_px, act_px, tolerance);
                 err = true;
+                err_x = (int)x;
+                err_y = (int)y;
                 break;
             }
         }
@@ -164,14 +171,117 @@ static bool screenshot_compare(const char * fn_ref, uint8_t tolerance)
         char fn_err_full[256];
         lv_snprintf(fn_err_full, sizeof(fn_err_full), "%s%s_err.png", REF_IMGS_PATH, fn_ref_no_ext);
 
+#if LV_USE_CANVAS
+        /* Create a canvas attached to the existing XRGB8888 buffer and draw a red circular ring at (err_x, err_y) */
+        lv_obj_t * canvas = lv_canvas_create(lv_screen_active());
+        lv_canvas_set_buffer(canvas,
+                             (void *)screen_buf_xrgb8888,
+                             draw_buf->header.w,
+                             draw_buf->header.h,
+                             LV_COLOR_FORMAT_XRGB8888);
+
+        /* Clamp coordinates into bounds */
+        if(err_x < 0) {
+            err_x = 0;
+        }
+        if(err_y < 0) {
+            err_y = 0;
+        }
+        if(err_x >= (int)draw_buf->header.w) {
+            err_x = (int)draw_buf->header.w - 1;
+        }
+        if(err_y >= (int)draw_buf->header.h) {
+            err_y = (int)draw_buf->header.h - 1;
+        }
+
+        /* Scale ring size for visibility on small/large screenshots */
+        int min_dim = (draw_buf->header.w < draw_buf->header.h) ? (int)draw_buf->header.w : (int)draw_buf->header.h;
+        int r = min_dim / 24;              /* ~4% of min dimension */
+        if(r < 10) r = 10;
+        if(r > 40) r = 40;
+        int border_w = r / 3;
+        if(border_w < 3) border_w = 3;
+        if(border_w > 8) border_w = 8;
+
+        /* Begin a drawing layer on the canvas */
+        lv_layer_t layer;
+        lv_canvas_init_layer(canvas, &layer);
+
+        /* Draw a red circular ring (transparent fill + thick red border) */
+        lv_draw_rect_dsc_t ring_dsc;
+        lv_draw_rect_dsc_init(&ring_dsc);
+        ring_dsc.bg_opa       = LV_OPA_TRANSP;
+        ring_dsc.border_opa   = LV_OPA_COVER;
+        ring_dsc.border_width = border_w;
+        ring_dsc.border_color = lv_color_hex(0x0000FF);
+        ring_dsc.radius       = LV_RADIUS_CIRCLE;
+
+        lv_area_t a;
+        a.x1 = err_x - r;
+        if(a.x1 < 0) {
+            a.x1 = 0;
+        }
+        a.y1 = err_y - r;
+        if(a.y1 < 0) {
+            a.y1 = 0;
+        }
+        a.x2 = err_x + r;
+        if(a.x2 >= (int)draw_buf->header.w) {
+            a.x2 = (int)draw_buf->header.w - 1;
+        }
+        a.y2 = err_y + r;
+        if(a.y2 >= (int)draw_buf->header.h) {
+            a.y2 = (int)draw_buf->header.h - 1;
+        }
+
+        lv_draw_rect(&layer, &ring_dsc, &a);
+
+        /* Optional: small center dot for precision */
+        lv_draw_rect_dsc_t dot_dsc;
+        lv_draw_rect_dsc_init(&dot_dsc);
+        dot_dsc.bg_color = lv_color_hex(0x0000FF);
+        dot_dsc.bg_opa   = LV_OPA_COVER;
+        dot_dsc.radius   = LV_RADIUS_CIRCLE;
+
+        lv_area_t d;
+        d.x1 = err_x - 1;
+        d.y1 = err_y - 1;
+        d.x2 = err_x + 1;
+        d.y2 = err_y + 1;
+
+        if(d.x1 < 0) {
+            d.x1 = 0;
+        }
+        if(d.y1 < 0) {
+            d.y1 = 0;
+        }
+        if(d.x2 >= (int)draw_buf->header.w) {
+            d.x2 = (int)draw_buf->header.w - 1;
+        }
+        if(d.y2 >= (int)draw_buf->header.h) {
+            d.y2 = (int)draw_buf->header.h - 1;
+        }
+
+        lv_draw_rect(&layer, &dot_dsc, &d);
+
+        /* Flush drawing to the canvas buffer */
+        lv_canvas_finish_layer(canvas, &layer);
+
+        /* Save annotated buffer next to the reference image */
         write_png_file(screen_buf_xrgb8888, draw_buf->header.w, draw_buf->header.h, fn_err_full);
+
+        /* Delete the canvas object (buffer is external; freed below) */
+        lv_obj_delete(canvas);
+#else
+        /* If canvas is disabled, save unannotated buffer as before */
+        write_png_file(screen_buf_xrgb8888, draw_buf->header.w, draw_buf->header.h, fn_err_full);
+#endif
     }
 
     fflush(stdout);
     lv_free(screen_buf_xrgb8888);
     lv_draw_buf_destroy(ref_draw_buf);
     return !err;
-
 }
 
 static unsigned  read_png_file(lv_draw_buf_t ** refr_draw_buf, unsigned * width, unsigned * height,
@@ -332,3 +442,4 @@ static void create_folders_if_needed(const char * path)
 }
 
 #endif
+
